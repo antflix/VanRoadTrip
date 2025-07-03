@@ -6,18 +6,38 @@
     <style>
         #map { width: 100%; height: 90vh; }
         .marker-img { width: 50px; height: 50px; object-fit: cover; border-radius: 4px; }
+        /* Lightbox overlay for photo preview */
+        #lightbox {
+            display: none;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 999;
+            justify-content: center;
+            align-items: center;
+        }
+        #lightbox img {
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 4px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
     </style>
     <script src="https://cdn.apple-mapkit.com/mk/5.x.x/mapkit.js"></script>
 </head>
 <body>
 <div id="map"></div>
+<div id="lightbox"><img id="lightbox-img" src="" alt="Photo preview"></div>
 <script>
 const photos = {{ photos|tojson }};
 
 mapkit.init({
     authorizationCallback: function(done) {
         // Provide your MapKit JS token
-        done(localStorage.getItem('MAPKIT_JWT') || 'YOUR_MAPKIT_TOKEN');
+        done('eyJraWQiOiIzQUdZM0s1U0s2IiwidHlwIjoiSldUIiwiYWxnIjoiRVMyNTYifQ.eyJpc3MiOiI3MjlOVVdTNTQ2IiwiaWF0IjoxNzUxMzU0MzkzLCJleHAiOjE3NTIwNDQzOTl9.-l2S2p_sT-5aXMAzvF7pgZ1Ehqy3uUkOPtZWluLbrB0eVZa_BFpXQN6Xv_WigDwNyIwCI7LrjMpU2M_j_ElSFQ');
     }
 });
 
@@ -34,13 +54,97 @@ function createAnnotation(photo) {
         title: photo.file
     });
     annotation.addEventListener('select', () => {
-        const popup = window.open(img.src, '_blank');
+        const lightbox = document.getElementById('lightbox');
+        const lbImg = document.getElementById('lightbox-img');
+        lbImg.src = img.src;
+        lightbox.style.display = 'flex';
     });
     return annotation;
 }
 
 const annotations = photos.map(createAnnotation);
 map.addAnnotations(annotations);
+
+fetch('/location-history.json')
+  .then(response => response.json())
+  .then(data => {
+    const visits = data.filter(e => e.visit);
+    const activities = data.filter(e => e.activity);
+
+    const visitPoints = visits.map(v => {
+      const [latStr, lonStr] = v.visit.topCandidate.placeLocation.slice(4).split(',');
+      const coords = {
+        latitude: parseFloat(latStr),
+        longitude: parseFloat(lonStr)
+      };
+      const duration = new Date(v.endTime) - new Date(v.startTime);
+      return { coords, duration };
+    });
+
+    const maxDuration = Math.max(...visitPoints.map(v => v.duration), 0);
+
+    const visitAnnotations = visitPoints.map(v => {
+      const size = maxDuration > 0
+        ? 10 + (v.duration / maxDuration) * 40
+        : 10;
+      const el = document.createElement('div');
+      el.style.width = `${size}px`;
+      el.style.height = `${size}px`;
+      el.style.backgroundColor = 'rgba(255, 0, 0, 0.6)';
+      el.style.border = '2px solid white';
+      el.style.borderRadius = '50%';
+      el.style.boxSizing = 'border-box';
+      return new mapkit.MarkerAnnotation(
+        new mapkit.Coordinate(v.coords.latitude, v.coords.longitude),
+        { glyph: el }
+      );
+    });
+    map.addAnnotations(visitAnnotations);
+
+    const pathCoords = [];
+    activities.forEach(a => {
+      const [startLat, startLon] = a.activity.start.slice(4).split(',').map(Number);
+      const [endLat, endLon] = a.activity.end.slice(4).split(',').map(Number);
+      pathCoords.push(new mapkit.Coordinate(startLat, startLon));
+      pathCoords.push(new mapkit.Coordinate(endLat, endLon));
+    });
+    if (pathCoords.length > 1) {
+      const routeLine = new mapkit.PolylineOverlay(pathCoords, {
+        style: new mapkit.Style({
+          strokeColor: 'rgba(0, 0, 255, 0.5)',
+          lineWidth: 3
+        })
+      });
+      map.addOverlay(routeLine);
+    }
+
+    const allCoords = visitPoints.map(v => [v.coords.latitude, v.coords.longitude])
+      .concat(pathCoords.map(c => [c.latitude, c.longitude]));
+    if (allCoords.length) {
+      const lats = allCoords.map(p => p[0]);
+      const lons = allCoords.map(p => p[1]);
+      const minLat = Math.min(...lats);
+      const maxLat = Math.max(...lats);
+      const minLon = Math.min(...lons);
+      const maxLon = Math.max(...lons);
+      const centerLat = (minLat + maxLat) / 2;
+      const centerLon = (minLon + maxLon) / 2;
+      const spanLat = (maxLat - minLat) * 1.2 || 0.01;
+      const spanLon = (maxLon - minLon) * 1.2 || 0.01;
+      map.region = new mapkit.CoordinateRegion(
+        new mapkit.Coordinate(centerLat, centerLon),
+        new mapkit.CoordinateSpan(spanLat, spanLon)
+      );
+    }
+  })
+  .catch(console.error);
+
+// hide lightbox when clicking outside the image
+document.getElementById('lightbox').addEventListener('click', e => {
+    if (e.target.id === 'lightbox') {
+        e.currentTarget.style.display = 'none';
+    }
+});
 
 </script>
 </body>
